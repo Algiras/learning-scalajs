@@ -78,14 +78,19 @@ object Scalaworkshop extends IOApp {
       drawGrid("blue", h, w, Step / 5)
 
 
-    def animationFrame[T](state: T, action: (T, Double) => IO[T], lastFrameAt: Double = 0): IO[T] = for {
+    def animationFrame[T](state: T, action: (T, Double) => IO[T], lastFrameAt: Option[Double] = None): IO[T] = for {
       newFrameAt <- IO.async_[Double](cb => {
         dom.window.requestAnimationFrame(delta => cb(Right(delta)))
         ()
       })
-      delta = (newFrameAt - lastFrameAt) / 1000
-      nextState <- action(state, delta)
-      result <- animationFrame(nextState, action, newFrameAt)
+      delta = lastFrameAt.map(fAt => (newFrameAt - fAt) / 1000)
+      result <- delta match {
+        case Some(value) => for {
+          newState <- action(state, value)
+          res <- animationFrame(newState, action, Some(newFrameAt))
+        } yield res
+        case None => animationFrame(state, action, Some(newFrameAt))
+      }
     } yield result
 
     sealed trait Move
@@ -102,24 +107,42 @@ object Scalaworkshop extends IOApp {
     sealed trait Action {
       def decay(delta: Double): Option[Action]
 
-      def effect(state: Point, delta: Double): Point
+      def effect(state: Point, delta: Double): Option[Point]
     }
 
     case class Set(point: Point) extends Action {
       override def decay(delta: Double): Option[Action] = None
 
-      override def effect(oldPoint: Point, delta: Double): Point = point
+      override def effect(oldPoint: Point, delta: Double): Option[Point] = Some(point)
     }
-    case class Movement(direction: Move, value: Double) extends Action {
-      override def decay(delta: Double): Option[Action] = Some(value - delta)
-        .filter(_ > 0)
-        .map(Movement(direction, _))
 
-      override def effect(state: Point, delta: Double): Point = direction match {
-        case Move.Right => state.copy(x = state.x + Step * delta)
-        case Move.Left => state.copy(x = state.x - Step * delta)
-        case Move.Up => state.copy(y = state.y + Step * delta)
-        case Move.Down => state.copy(y = state.y + Step * delta)
+    case class Forever(action: Action, cache: Option[Action] = None) extends Action {
+      override def decay(delta: Double): Option[Action] = (cache, action.decay(delta)) match {
+        case (Some(_), Some(action)) => Some(copy(action))
+        case (None, Some(decayedAction)) => Some(copy(decayedAction, Some(action)))
+        case (Some(preservedAction), None) => Some(copy(preservedAction))
+        case (None, None) => Some(copy(action, Some(action)))
+      }
+
+      override def effect(state: Point, delta: Double): Option[Point] = action.effect(state, delta)
+    }
+
+    case class Movement(direction: Move, value: Double, velocity: Option[Double] = None) extends Action {
+      val internalVelocity = velocity.getOrElse(1.0)
+
+      override def decay(delta: Double): Option[Action] = Some(value - (delta * internalVelocity))
+        .filter(_ > 0)
+        .map(copy(direction, _))
+
+      override def effect(state: Point, delta: Double): Option[Point] = {
+        val stepModifier = Step * internalVelocity * delta
+
+        Some(direction match {
+          case Move.Right => state.copy(x = state.x + stepModifier)
+          case Move.Left => state.copy(x = state.x - stepModifier)
+          case Move.Up => state.copy(y = state.y + stepModifier)
+          case Move.Down => state.copy(y = state.y + stepModifier)
+        })
       }
     }
 
@@ -132,7 +155,7 @@ object Scalaworkshop extends IOApp {
         headDecay.orElse(tailDecay)
       }
 
-      override def effect(state: Point, delta: Double): Point = actions.head.effect(state, delta)
+      override def effect(state: Point, delta: Double): Option[Point] = actions.headOption.flatMap(_.effect(state, delta))
     }
 
     case class State[T](value: T, actions: Seq[(String, Action)])
@@ -157,7 +180,7 @@ object Scalaworkshop extends IOApp {
     }
 
     val green = Game.element(Point(0, 0), List(Actions(List(Movement(Move.Right, 3), Movement(Move.Down, 3), Movement(Move.Up, 1), Movement(Move.Left, 1), Set(Point(0, 25)), Movement(Move.Right, 2)))), Rectangle(_, Step.toDouble, Step.toDouble, Some("green"), None))
-    val red = Game.element(Point(0, 0), List(Movement(Move.Down, 3)), Rectangle(_, Step.toDouble, Step.toDouble, Some("red"), None))
+    val red = Game.element(Point(0, 0), List(Forever(Actions(List(Movement(Move.Down, 3, Some(5)), Set(Point(0, 0)))))), Rectangle(_, Step.toDouble, Step.toDouble, Some("red"), None))
     val yellow = Game.element(Point(0, 0), List(Movement(Move.Down, 3), Movement(Move.Right, 3)), Rectangle(_, Step.toDouble, Step.toDouble, Some("yellow"), None))
     val blue = Game.element(Point(0, 0), List(Movement(Move.Down, 6)), Rectangle(_, Step.toDouble, Step.toDouble, Some("blue"), None))
     val orange = Game.element(Point(0, 0), List(Movement(Move.Down, 6)), Line(_, Point(25, 25), Some("Orange"), Some(3)))
@@ -169,19 +192,16 @@ object Scalaworkshop extends IOApp {
           case (grd, (key, graphic)) => grd |+| graphic(s.elements(key))
         }.draw(ctx))
       } yield {
-        val a = s.copy(
+        s.copy(
           s.movements.foldLeft(s.elements)((st, action) => {
             action match {
-              case (key, action) => st.updatedWith(key)(_.map(action.effect(_, delta)))
+              case (key, action) => st.updatedWith(key)(_.flatMap(action.effect(_, delta)))
             }
           }),
           s.movements
             .map { case (key, action) => action.decay(delta).map(key -> _) }
             .collect { case Some(v) => v }
         )
-        println(a)
-
-        a
       })
     } yield ExitCode.Success
 
