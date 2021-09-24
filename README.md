@@ -1,5 +1,10 @@
-scala-workshop
+Scala-workshop
 ====
+
+This workshop will introduce you to ScalaJs workflow and functional concepts.
+At the end this project should help you produce something like:
+
+![example](example.png)
 
 ## Prerequisites
 

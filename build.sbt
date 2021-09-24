@@ -8,6 +8,7 @@ resolvers += "jitpack" at "https://jitpack.io"
 libraryDependencies ++= Seq(
   "org.scala-js" %%% "scalajs-dom" % "1.1.0",
   "org.typelevel" %%% "cats-effect" % "3.2.9",
+  "co.fs2" %%% "fs2-core" % "3.1.1",
   "org.scalatest" %%% "scalatest" % "3.2.9" % Test
 )
 
